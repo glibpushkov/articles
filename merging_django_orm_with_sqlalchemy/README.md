@@ -1,11 +1,10 @@
-Merging  Django ORM with SQLAlchemy for Easier Data Analysis
-
-![](https://thepracticaldev.s3.amazonaws.com/i/a0ngpwycmxttdxqvyyz4.png)
+![Cover image](images/a0ngpwycmxttdxqvyyz4.png)
+# Merging  Django ORM with SQLAlchemy for Easier Data Analysis
 Development of products with Django framework is usually easy and straightforward; great documentation, many tools out of the box, plenty of open source libraries and big community. Django ORM takes full control about SQL layer protecting you from mistakes, and underlying details of queries so you can spend more time on designing and building your application structure in Python code. However, sometimes such behavior may hurt - for example, when you’re building a project related to data analysis. Building advanced queries with Django is not very easy; it’s hard to read (in Python) and hard to understand what’s going on in SQL-level without logging or printing generated SQL queries somewhere. Moreover, such queries could not be efficient enough, so this will hit you back when you load more data into DB to play with. In one moment, you can find yourself doing too much raw SQL through Django cursor, and this is the moment when you should do a break and take a look on another interesting tool, which is placed right between ORM layer and the layer of raw SQL queries.
 
 As you can see from the title of the article, we successfully mixed Django ORM and SQLAlchemy Core together, and we’re very satisfied with results. We built an application which helps to analyze data produced by EMR systems by aggregating data into charts and tables, scoring by throughput/efficiency/staff cost, and highlighting outliers which allows to optimize business processes for clinics and save money.
 
-##What is the point of mixing Django ORM with SQLAlchemy?
+## What is the point of mixing Django ORM with SQLAlchemy?
 
 There are a few reasons why we stepped out from Django ORM for this task:
 
@@ -43,7 +42,7 @@ WHERE address.email LIKE :email_1 ORDER BY anon_1.user_name
 
 Note: with such tricks, we don’t fall into `N+1 problem`: `from_select` makes an additional `SELECT` wrapper around the query, so we reduce the amount of rows at first (via `LIKE` and `LIMIT`) and only then we join the address information.
 
-##How to mix Django application and SQLALchemy
+## How to mix Django application and SQLALchemy
 
 So if you’re interested and want to try to mix SQLAlchemy with Django application, here are some hints which could help you.
 
@@ -84,7 +83,7 @@ For dates, such a trick will not work. There is [a discussion](https://stackover
 
 Another option is to enable queries logging into the file via database configuration, but in this case, you could face another issue; it becomes hard to find a query you want to debug if Django ORM connected to this database too.
 
-##Testing  
+## Testing  
 
 Note: Pytest [multidb note](http://pytest-django.readthedocs.io/en/latest/database.html#tests-requiring-multiple-databases) says “Currently pytest-django does not specifically support Django’s multi-database support. You can however use normal Django TestCase instances to use it’s multi_db support.”
 
@@ -100,7 +99,7 @@ Also, another scenario is possible - you have Django-models only in one database
 
 Note: Such tests will be slower as tables will be recreated for each test. Ideally, tables should be created once (declared as `@pytest.fixture(scope='session', autouse=True)`), and each transaction should rollback data for each test. It’s not easy to achieve because of different connections: Django & SQLAlchemy or different connections of SQLAlchemy connection-pool, e.g in your tests you start the transaction, fill DB with test data, then run test and rollback transaction (it wasn’t committed). But during the test, your application code may do queries to DB like connection.execute(query) which performed outside of transaction which created test data. So with default transaction isolation level, the application will not see any data, only empty tables. It’s possible to change transaction isolation level to `READ UNCOMMITTED` for SQLAlchemy connection, and everything will work as expected, but it’s definitely not a solution at all. 
 
-##Conclusion 
+## Conclusion 
 
 To sum up everything above, SQLAlchemy Core is a great tool which brings you closer to SQL and gives you understanding and full control over the queries. If you’re building the application (or a part of it) which requires advanced aggregations, it is worth it to check out SQLAlchemy Core capabilities as an alternative to Django ORM tools. 
 
