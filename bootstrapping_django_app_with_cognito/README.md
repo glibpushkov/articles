@@ -1,4 +1,4 @@
-Bootstrapping Django app with Cognito
+# Bootstrapping Django app with Cognito
 
 #### Introduction
 
@@ -30,7 +30,7 @@ I found several libraries that help with integration, but it's not hard to build
 
 `pip install djangorestframework cryptography drf-jwt`
 
-####2. Create a User Pool in AWS Cognito
+#### 2. Create a User Pool in AWS Cognito
 
 Sign-in into your AWS console and proceed to Cognito. Press `Manage User Pools` (the `Identity pool` is something [different](https://aws.amazon.com/premiumsupport/knowledge-center/cognito-user-pools-identity-pools/)). Create new user pool and configure attributes.
 
@@ -60,7 +60,22 @@ congrats, we obtained `id_token` and `access_token`!
 
 to see what's inside - go to https://jwt.io/ and put the token into debugger - for `access_token` payload would be 
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-1-py
+```json
+{
+  "sub": "9387dbed-ce4a-44fa-b6ab-6b26327e9305",
+  "event_id": "01c908b7-c15c-42b4-9849-855af5528051",
+  "token_use": "access",
+  "scope": "openid email",
+  "auth_time": 1572171426,
+  "iss": "https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_bUFIXsrqe",
+  "exp": 1572175026,
+  "iat": 1572171426,
+  "version": 2,
+  "jti": "cc5eeb1d-686e-42ad-b65d-5c5583a80140",
+  "client_id": "2bdgd681nmmnickj0coq0j1oq1",
+  "username": "9387dbed-ce4a-44fa-b6ab-6b26327e9305"
+}
+```
 
 #### 3. Create custom User model
 
@@ -68,7 +83,27 @@ It's a good practice to override the default user model once you start building 
 
 Side-note: I would recommend to setup an abstract base model which would be used everywhere. It can be placed in the special app where general and non-related to business logic application code lives, for example - `core`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-2-py
+```python
+import uuid
+
+from django.db import models
+
+
+class AbstractBaseModel(models.Model):
+    """
+    Base abstract model, that has `uuid` instead of `id` and includes `created_at`, `updated_at` fields.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, unique=True)
+    created_at = models.DateTimeField('Created at', auto_now_add=True)
+    updated_at = models.DateTimeField('Updated at', auto_now=True)
+
+	class Meta:
+        abstract = True
+    
+    def __repr__(self):
+        return f'<{self.__class__.__name__} {self.id}>'
+
+```
 
 Why it's helpful:
 
@@ -84,7 +119,59 @@ Why it's helpful:
 
 Now let's create a custom user at `account/models.py`:
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-3-py
+```python
+from django.db import models
+
+from django.contrib.auth.base_user import AbstractBaseUser
+from django.contrib.auth.models import PermissionsMixin
+from django.contrib.auth.validators import UnicodeUsernameValidator
+
+from core.models import AbstractBaseModel
+
+
+class User(PermissionsMixin, AbstractBaseUser, AbstractBaseModel):
+    """
+    Table contains cognito-users & django-users.
+    PermissionsMixin leverage built-in django model permissions system
+    (which allows to limit information for staff users via Groups).
+    Note: Django-admin user and app user not split in different tables because of simplicity of development.
+    Some libraries assume there is only one user model, and they can't work with both.
+    For example to have a history log of changes for entities - to save which user made a change of object attribute,
+    perhaps, auth-related libs, and some other.
+    With current implementation we don't need to fork, adapt and maintain third party packages.
+    They should work out of the box.
+    The disadvantage is - cognito-users will have unused fields which always empty. Not critical.
+    """
+    username_validator = UnicodeUsernameValidator()
+
+    ### Common fields ###
+    # For cognito-users username will contain `sub` claim from jwt token
+    # (unique identifier (UUID) for the authenticated user).
+    # For django-users it will contain username which will be used to login into django-admin site
+    username = models.CharField('Username', max_length=255, unique=True, validators=[username_validator])
+    is_active = models.BooleanField('Active', default=True)
+
+    ### Cognito-user related fields ###
+    # some additional fields which will be filled-out only for users registered via Cognito
+    pass
+
+    ### Django-user related fields ###
+    # password is inherited from AbstractBaseUser
+    email = models.EmailField('Email address', blank=True)  # allow non-unique emails
+    is_staff = models.BooleanField(
+        'staff status',
+        default=False,
+        help_text='Designates whether the user can log into this admin site.'
+    )
+
+    USERNAME_FIELD = 'username'
+    EMAIL_FIELD = 'email'
+    REQUIRED_FIELDS = ['email']  # used only on createsuperuser
+
+    @property
+    def is_django_user(self):
+        return self.has_usable_password()
+```
 
 And in `settings.py` change a default user model
 
@@ -96,29 +183,107 @@ Now we can run migrations.
 
 And the final step - let's register custom model in `account/admin.py`:
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-4-py
+```python
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.forms import UserCreationForm, UserChangeForm, UsernameField
+from django.utils.translation import ugettext_lazy as _
+
+from account.models import User
+
+
+class CustomUserCreationForm(UserCreationForm):
+
+    class Meta(UserCreationForm.Meta):
+        model = User
+
+
+class CustomUserChangeForm(UserChangeForm):
+
+    class Meta(UserCreationForm.Meta):
+        model = User
+        fields = '__all__'
+        field_classes = {'username': UsernameField}
+
+
+@admin.register(User)
+class CustomUserAdmin(UserAdmin):
+    fieldsets = (
+        (None, {'fields': ('username', 'email', 'password', )}),
+        (
+            _('Permissions'),
+            {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions', )}
+        ),
+        (_('Important dates'), {'fields': ('created_at', 'updated_at', )}),
+    )
+    readonly_fields = ('created_at', 'updated_at', )
+    add_fieldsets = (
+        (None, {
+            'classes': ('wide', ),
+            'fields': ('username', 'email', 'password1', 'password2', ),
+        }),
+    )
+    form = CustomUserChangeForm
+    add_form = CustomUserCreationForm
+    list_display = ('username', 'is_staff', 'is_active', )
+```
 
 #### 4. Configure REMOTE_USER
 
 In case when external authentication sources are used - additional configuration has to be done https://docs.djangoproject.com/en/3.1/howto/auth-remote-user/. The `RemoteUserBackend` creates a new User record in the database if it can't find existing. This behavior can be changed by `create_unknown_user`, find more info in the docs https://docs.djangoproject.com/en/3.1/ref/contrib/auth/#django.contrib.auth.backends.RemoteUserBackend. 
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-5-py
+```python
+MIDDLEWARE = [
+    ...
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.auth.middleware.RemoteUserMiddleware',
+	...
+]
+
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.RemoteUserBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+```
 
 #### 5. Configure DRF
 
 `settings.py` 
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-6-py
+```python
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': (
+        'core.api.permissions.DenyAny',
+    ),
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_jwt.authentication.JSONWebTokenAuthentication',
+    ),
+}
+```
 
 Bonus advice:
 
 To reduce the number of security issues that could happen due to inattentiveness I would recommend to override the default permission class. In `core/api/permissions`you can put the following class:
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-7-py
+```python
+class DenyAny(BasePermission):
+    def has_permission(self, request, view):
+        return False
+
+    def has_object_permission(self, request, view, obj):
+        return False
+```
 
 `settings.py`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-8-py
+```python
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': (
+        'core.api.permissions.DenyAny',
+    ),
+    ...
+}
+```
 
 #### 6. Configure djangorestframework-jwt
 
@@ -126,7 +291,39 @@ On application start we need to download public JWKS which will be used to verif
 
 `settings.py`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-9-py
+```python
+import json
+from urllib import request
+...
+
+COGNITO_AWS_REGION = 'eu-central-1'
+COGNITO_USER_POOL = 'eu-central-1_xxxxxx'
+# Provide this value if `id_token` is used for authentication (it contains 'aud' claim).
+# `access_token` doesn't have it, in this case keep the COGNITO_AUDIENCE empty
+COGNITO_AUDIENCE = None
+COGNITO_POOL_URL = None  # will be set few lines of code later, if configuration provided
+
+rsa_keys = {}
+# To avoid circular imports, we keep this logic here.
+# On django init we download jwks public keys which are used to validate jwt tokens.
+# For now there is no rotation of keys (seems like in Cognito decided not to implement it)
+if COGNITO_AWS_REGION and COGNITO_USER_POOL:
+    COGNITO_POOL_URL = 'https://cognito-idp.{}.amazonaws.com/{}'.format(COGNITO_AWS_REGION, COGNITO_USER_POOL)
+    pool_jwks_url = COGNITO_POOL_URL + '/.well-known/jwks.json'
+    jwks = json.loads(request.urlopen(pool_jwks_url).read())
+    rsa_keys = {key['kid']: json.dumps(key) for key in jwks['keys']}
+
+
+JWT_AUTH = {
+    'JWT_PAYLOAD_GET_USERNAME_HANDLER': 'core.api.jwt.get_username_from_payload_handler',
+    'JWT_DECODE_HANDLER': 'core.api.jwt.cognito_jwt_decode_handler',
+    'JWT_PUBLIC_KEY': rsa_keys,
+    'JWT_ALGORITHM': 'RS256',
+    'JWT_AUDIENCE': COGNITO_AUDIENCE,
+    'JWT_ISSUER': COGNITO_POOL_URL,
+    'JWT_AUTH_HEADER_PREFIX': 'Bearer',
+}
+```
 
 (In a real project settings have to be less hardcoded, something like that
 
@@ -138,7 +335,28 @@ There is already a nice article about how to [manage django settings as a **pro*
 
 Downloaded rsa keys look like that - 
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-10-py
+```json
+{
+  "keys": [
+    {
+      "alg": "RS256",
+      "e": "AQAB",
+      "kid": "Mvd6BSFCvQ+PbEOQCqOZd3CCSdd/d/mw+65R5uN1+r0=",
+      "kty": "RSA",
+      "n": "kQgIEUZBMkoN7jU_rRxjH...B1tcoSa4EkYUZtDsQ",
+      "use": "sig"
+    },
+    {
+      "alg": "RS256",
+      "e": "AQAB",
+      "kid": "jzr0vtU+c+hY2apVvODttwoYVSpdS/Bhn8D7YLAXe7o=",
+      "kty": "RSA",
+      "n": "l6m0rB8RSQWmp8gijxjYK...Na77QY8cRfzNLuLmzw",
+      "use": "sig"
+    }
+  ]
+}
+```
 
 If you check a decoded id_token` and `access_token in their headers there are
 
@@ -153,7 +371,53 @@ that specifies which JWKS should be used to validate a token. The "mapping" logi
 
 `core/utils/jwt`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-11-py
+```python
+import jwt
+from jwt import DecodeError
+from jwt.algorithms import RSAAlgorithm
+
+from rest_framework_jwt.settings import api_settings
+
+from django.contrib.auth import authenticate
+
+
+def get_username_from_payload_handler(payload):
+    username = payload.get('sub')
+    authenticate(remote_user=username)
+    return username
+
+
+def cognito_jwt_decode_handler(token):
+    """
+    To verify the signature of an Amazon Cognito JWT, first search for the public key with a key ID that
+    matches the key ID in the header of the token. (c)
+    https://aws.amazon.com/premiumsupport/knowledge-center/decode-verify-cognito-json-token/
+    Almost the same as default 'rest_framework_jwt.utils.jwt_decode_handler', but 'secret_key' feature is skipped
+    """
+    options = {'verify_exp': api_settings.JWT_VERIFY_EXPIRATION}
+    unverified_header = jwt.get_unverified_header(token)
+    if 'kid' not in unverified_header:
+        raise DecodeError('Incorrect authentication credentials.')
+
+    kid = unverified_header['kid']
+    try:
+        # pick a proper public key according to `kid` from token header
+        public_key = RSAAlgorithm.from_jwk(api_settings.JWT_PUBLIC_KEY[kid])
+    except KeyError:
+        # in this place we could refresh cached jwks and try again
+        raise DecodeError('Can\'t find proper public key in jwks')
+    else:
+        return jwt.decode(
+            token,
+            public_key,
+            api_settings.JWT_VERIFY,
+            options=options,
+            leeway=api_settings.JWT_LEEWAY,
+            audience=api_settings.JWT_AUDIENCE,
+            issuer=api_settings.JWT_ISSUER,
+            algorithms=[api_settings.JWT_ALGORITHM]
+        )
+```
 
 Usually, JWKS should be periodically rotated by auth service and you could have a `KeyError` which indicates that you need to download new JWKS keys, but Cognito doesn't have this functionality.
 
@@ -163,15 +427,56 @@ A few notes about  `get_username_from_payload_handler` - `sub` in jwt payload ca
 
 `account/api/serializers.py`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-12-py
+```python
+from rest_framework import serializers
+
+from account.models import User
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """ Used to retrieve user info """
+
+    class Meta:
+        model = User
+        fields = '__all__'
+```
 
 `account/api/views.py`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-13-py
+```python
+from rest_framework.generics import GenericAPIView
+from rest_framework.mixins import RetrieveModelMixin
+from rest_framework.permissions import IsAuthenticated
+
+from account.api.serializers import UserSerializer
+
+
+class UserProfileAPIView(RetrieveModelMixin, GenericAPIView):
+    serializer_class = UserSerializer
+    permission_classes = (IsAuthenticated, )
+
+    def get_object(self):
+        return self.request.user
+
+    def get(self, request, *args, **kwargs):
+        """
+        User profile
+        Get profile of current logged in user.
+        """
+        return self.retrieve(request, *args, **kwargs)
+```
 
 `urls.py`
 
-https://gist.github.com/glebpushkov/9bddda778d976cfbe89f6d795beb47d2#file-14-py
+```python
+from account.api.views import UserProfileAPIView
+
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/v1/me', UserProfileAPIView.as_view(), name='my_profile'),
+]
+```
 
 #### 8. Run server and make a request!
 
@@ -187,7 +492,7 @@ Congratulations, everything is done!
 
 Sometimes it's hard, and it's better to dig into the source code and check when and why any of the messages appear. For example `{"detail": "Invalid signature."}`actually means that there is no such user in the database - which indicates that `REMOTE_USER` was not properly configured as it has to create a new user if it fails to find existing one.
 
-####What’s Worth to Note when Working with AWS Cognito:
+#### What’s Worth to Note when Working with AWS Cognito:
 
 Below, I’ve listed a number of facts that I’ve faced when working with Cognito. They aren’t either pros or cons. These are just peculiarities you should know when starting to develop a Django app authentication feature with Cognito and tips how to solve them.
 
@@ -205,7 +510,7 @@ Below, I’ve listed a number of facts that I’ve faced when working with Cogni
 - No easy way to mark token as invalid when user changes password or signs out https://github.com/aws-amplify/amplify-js/issues/3435
 - And a few more things have been already covered [here](https://securityboulevard.com/2019/02/cave-of-broken-mirrors-3-issues-with-aws-cognito/).
 
-####Cognito & CloudFormation
+#### Cognito & CloudFormation
 
 CloudFormation is a great tool that allows you to store & maintain your infrastructure as a code. You can define multiple stacks, for each of stack you need to create a special JSON template that defines your resources and configuration. Such files could be managed manually, or they could be generated by [Troposphere](https://github.com/cloudtools/troposphere) via Python code (still keep in mind that for growing infrastructure it's easy to overengineer and have a hard maintainable codebase, which will hurt a lot in a long-term). CloudFormation automatically rollbacks all changes if something went wrong during a stack update, which is really great feature. But the way how it manages Cognito is a bit strange, thus I would like to highlight the most important notes:
 
